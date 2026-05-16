@@ -1,0 +1,16 @@
+[package]
+name = "codex-rust-genai-bridge"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+genai = { workspace = true }
+codex-api = { workspace = true }
+codex-protocol = { workspace = true }
+futures = { workspace = true }
+tokio = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+http = { workspace = true }
+reqwest = { workspace = true }

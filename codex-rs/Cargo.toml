@@ -103,6 +103,7 @@ members = [
     "utils/template",
     "codex-client",
     "codex-api",
+    "codex-rust-genai-bridge",
     "state",
     "terminal-detection",
     "test-binary-support",
@@ -132,6 +133,7 @@ codex-agent-graph-store = { path = "agent-graph-store" }
 codex-agent-identity = { path = "agent-identity" }
 codex-ansi-escape = { path = "ansi-escape" }
 codex-api = { path = "codex-api" }
+codex-rust-genai-bridge = { path = "codex-rust-genai-bridge" }
 codex-aws-auth = { path = "aws-auth" }
 codex-app-server = { path = "app-server" }
 codex-app-server-transport = { path = "app-server-transport" }
@@ -282,6 +284,7 @@ env_logger = "0.11.9"
 eventsource-stream = "0.2.3"
 flate2 = "1.1.8"
 futures = { version = "0.3", default-features = false }
+genai = { path = "/Volumes/soddy/git_workspace/fork-rust-genai" }
 gethostname = "1.1.0"
 gix = { version = "0.81.0", default-features = false, features = ["sha1"] }
 glob = "0.3"

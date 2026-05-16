@@ -53,9 +53,11 @@ codex-plugin = { workspace = true }
 codex-model-provider = { workspace = true }
 codex-protocol = { workspace = true }
 codex-response-debug-context = { workspace = true }
+codex-rust-genai-bridge = { workspace = true, optional = true }
 codex-rollout = { workspace = true }
 codex-rollout-trace = { workspace = true }
 codex-rmcp-client = { workspace = true }
+genai = { workspace = true, optional = true }
 codex-sandboxing = { workspace = true }
 codex-state = { workspace = true }
 codex-terminal-detection = { workspace = true }
@@ -158,3 +160,7 @@ zstd = { workspace = true }
 
 [package.metadata.cargo-shear]
 ignored = ["openssl-sys"]
+
+[features]
+default = []
+rust-genai = ["dep:codex-rust-genai-bridge", "dep:genai"]
