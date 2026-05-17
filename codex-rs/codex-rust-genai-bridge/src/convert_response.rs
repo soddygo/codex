@@ -1,5 +1,5 @@
 use codex_api::ResponseEvent;
-use codex_protocol::models::{ContentItem, ResponseItem};
+use codex_protocol::models::{ContentItem, ReasoningItemContent, ResponseItem};
 use codex_protocol::protocol::TokenUsage;
 use genai::chat::ToolChunk;
 use genai::chat::{ChatStreamEvent, StopReason, StreamChunk, StreamEnd};
@@ -146,6 +146,23 @@ fn handle_stream_end(end: StreamEnd, pending: &mut PendingAssistantMessage) -> V
             phase: None,
         };
         events.push(ResponseEvent::OutputItemDone(message_item));
+    }
+
+    // Emit Reasoning item so reasoning content is stored for echo-back
+    // to providers that require it in subsequent requests (e.g. DeepSeek).
+    if !pending.reasoning_buffer.is_empty() {
+        let reasoning_text = std::mem::take(&mut pending.reasoning_buffer);
+        let reasoning_id = format!("rsn_{}", pending.reasoning_content_index);
+        let reasoning_item = ResponseItem::Reasoning {
+            id: reasoning_id.clone(),
+            summary: vec![],
+            content: Some(vec![ReasoningItemContent::ReasoningText {
+                text: reasoning_text.clone(),
+            }]),
+            encrypted_content: Some(reasoning_text),
+        };
+        events.push(ResponseEvent::OutputItemAdded(reasoning_item.clone()));
+        events.push(ResponseEvent::OutputItemDone(reasoning_item));
     }
 
     // 2. Emit OutputItemDone for each tool call as FunctionCall.

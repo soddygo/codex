@@ -16,7 +16,26 @@ pub fn build_genai_client(
     adapter_kind: AdapterKind,
 ) -> genai::Client {
     let base_url = api_provider.base_url.clone();
+    // Ensure trailing slash so reqwest::Url::join appends rather than
+    // replaces the last path segment (e.g. /v1 + chat/completions
+    // -> /v1/chat/completions, not /chat/completions).
+    let base_url = if base_url.ends_with('/') {
+        base_url
+    } else {
+        format!("{base_url}/")
+    };
     let auth_headers = api_auth.to_auth_headers();
+
+    let has_auth = auth_headers
+        .get(http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .is_some();
+    tracing::info!(
+        base_url = %base_url,
+        adapter = ?adapter_kind,
+        has_authorization_header = has_auth,
+        "Building genai client"
+    );
 
     genai::Client::builder()
         .with_adapter_kind(adapter_kind)
@@ -24,12 +43,20 @@ pub fn build_genai_client(
             let token = auth_headers
                 .get(http::header::AUTHORIZATION)
                 .and_then(|v| v.to_str().ok())
-                .map(|v| v.to_string())
+                .map(|v| {
+                    // Strip "Bearer " prefix — the adapter adds it back.
+                    // `api_auth.to_auth_headers()` returns the full header
+                    // value (e.g. "Bearer sk-xxx"), but genai adapters
+                    // format!("Bearer {api_key}") when constructing the
+                    // Authorization header. Without stripping we'd send
+                    // "Bearer Bearer sk-xxx".
+                    v.strip_prefix("Bearer ").unwrap_or(v).to_string()
+                })
                 .or_else(|| {
                     auth_headers
                         .get("api-key")
                         .and_then(|v| v.to_str().ok())
-                        .map(|v| format!("Bearer {v}"))
+                        .map(|v| v.to_string())
                 });
 
             Ok(token.map(AuthData::Key))
@@ -44,7 +71,7 @@ pub fn build_genai_client(
 /// Builds genai `Headers` from Codex provider, auth, and extra headers.
 pub fn build_extra_headers(
     api_provider: &Provider,
-    api_auth: &SharedAuthProvider,
+    _api_auth: &SharedAuthProvider,
     extra_headers: &HeaderMap,
 ) -> genai::Headers {
     let mut headers: Vec<(String, String)> = Vec::new();
@@ -56,13 +83,11 @@ pub fn build_extra_headers(
         }
     }
 
-    // Auth headers override
-    let auth_headers = api_auth.to_auth_headers();
-    for (key, value) in auth_headers.iter() {
-        if let Ok(v) = value.to_str() {
-            headers.push((key.as_str().to_string(), v.to_string()));
-        }
-    }
+    // Auth headers are intentionally NOT forwarded here.
+    // The genai adapter already sets the Authorization header via the
+    // auth resolver (build_genai_client). Duplicating it triggers 400
+    // rejections from reverse proxies (openresty/nginx) that refuse
+    // requests with duplicate Authorization headers.
 
     // Extra headers take top precedence
     for (key, value) in extra_headers.iter() {

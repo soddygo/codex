@@ -56,6 +56,16 @@ fn convert_response_items(items: &[ResponseItem]) -> Vec<ChatMessage> {
             } => {
                 if let Some(ec) = encrypted_content {
                     pending_thought_signatures.push(ec.clone());
+                    // Also inject as ReasoningContent into the last assistant
+                    // message so genai echoes it back via the reasoning_content
+                    // field — DeepSeek requires this on subsequent requests.
+                    if let Some(last_msg) = messages.last_mut()
+                        && last_msg.role == ChatRole::Assistant
+                    {
+                        last_msg
+                            .content
+                            .push(ContentPart::ReasoningContent(ec.clone()));
+                    }
                 }
             }
             ResponseItem::FunctionCall {
@@ -77,9 +87,19 @@ fn convert_response_items(items: &[ResponseItem]) -> Vec<ChatMessage> {
                     tool_call.thought_signatures =
                         Some(std::mem::take(&mut pending_thought_signatures));
                 }
-                messages.push(ChatMessage::assistant(MessageContent::from(
-                    ContentPart::ToolCall(tool_call),
-                )));
+                let tc_part = ContentPart::ToolCall(tool_call);
+                // If the last message is already an Assistant, append the tool
+                // call to it. This avoids creating consecutive Assistant messages
+                // where only one carries reasoning_content — providers like
+                // DeepSeek require reasoning_content on every assistant message
+                // when thinking mode is active.
+                if let Some(last_msg) = messages.last_mut()
+                    && last_msg.role == ChatRole::Assistant
+                {
+                    last_msg.content.push(tc_part);
+                } else {
+                    messages.push(ChatMessage::assistant(MessageContent::from(tc_part)));
+                }
             }
             ResponseItem::CustomToolCall {
                 name,
@@ -95,9 +115,14 @@ fn convert_response_items(items: &[ResponseItem]) -> Vec<ChatMessage> {
                     fn_arguments,
                     thought_signatures: None,
                 };
-                messages.push(ChatMessage::assistant(MessageContent::from(
-                    ContentPart::ToolCall(tool_call),
-                )));
+                let tc_part = ContentPart::ToolCall(tool_call);
+                if let Some(last_msg) = messages.last_mut()
+                    && last_msg.role == ChatRole::Assistant
+                {
+                    last_msg.content.push(tc_part);
+                } else {
+                    messages.push(ChatMessage::assistant(MessageContent::from(tc_part)));
+                }
             }
             ResponseItem::FunctionCallOutput { call_id, output } => {
                 let content = match &output.body {
@@ -335,5 +360,267 @@ mod tests {
         };
 
         assert!(responses_request_to_chat_request(&request).is_none());
+    }
+
+    /// Simulates the second turn of a conversation where the first turn
+    /// produced both a text response and reasoning content (e.g. DeepSeek thinking mode).
+    /// The Reasoning item MUST be injected as ContentPart::ReasoningContent into
+    /// the last assistant message so the provider gets its reasoning echoed back.
+    #[test]
+    fn test_reasoning_injected_into_assistant_message() {
+        let request = ResponsesApiRequest {
+            model: "deepseek-v4-flash".into(),
+            instructions: "You are helpful.".into(),
+            input: vec![
+                // First turn: user asks something
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".into(),
+                    content: vec![ContentItem::InputText {
+                        text: "Hello".into(),
+                    }],
+                    phase: None,
+                },
+                // First turn: assistant responds with text
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".into(),
+                    content: vec![ContentItem::OutputText {
+                        text: "Hi there!".into(),
+                    }],
+                    phase: None,
+                },
+                // First turn: reasoning content from the assistant's thinking
+                ResponseItem::Reasoning {
+                    id: "rsn_1".into(),
+                    summary: vec![],
+                    content: None,
+                    encrypted_content: Some("Let me think about this...".into()),
+                },
+                // Second turn: user follows up
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".into(),
+                    content: vec![ContentItem::InputText {
+                        text: "What was my first question?".into(),
+                    }],
+                    phase: None,
+                },
+            ],
+            tools: vec![],
+            tool_choice: "auto".into(),
+            parallel_tool_calls: true,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![],
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        };
+
+        let result = responses_request_to_chat_request(&request).unwrap();
+        assert_eq!(result.system, Some("You are helpful.".into()));
+        // Messages: user(Hello), assistant(+ReasoningContent), user(What was...)
+        assert_eq!(result.messages.len(), 3);
+
+        // The assistant message should have both text and reasoning content
+        let assistant_msg = &result.messages[1];
+        assert_eq!(assistant_msg.role, ChatRole::Assistant);
+        let parts = assistant_msg.content.parts();
+        assert_eq!(
+            parts.len(),
+            2,
+            "assistant message should have text + reasoning content"
+        );
+        assert!(
+            matches!(&parts[0], ContentPart::Text(t) if t == "Hi there!"),
+            "first part should be text"
+        );
+        assert!(
+            matches!(&parts[1], ContentPart::ReasoningContent(r) if r == "Let me think about this..."),
+            "second part should be ReasoningContent"
+        );
+    }
+
+    /// Reasoning that arrives BEFORE the assistant Message item (unusual order)
+    /// should NOT cause a crash — it's silently dropped since there's no
+    /// preceding Assistant message to attach to.
+    #[test]
+    fn test_reasoning_before_assistant_message_is_benign() {
+        let request = ResponsesApiRequest {
+            model: "deepseek-v4-flash".into(),
+            instructions: String::new(),
+            input: vec![
+                // Reasoning BEFORE assistant message (should be skipped)
+                ResponseItem::Reasoning {
+                    id: "rsn_orphan".into(),
+                    summary: vec![],
+                    content: None,
+                    encrypted_content: Some("orphan reasoning".into()),
+                },
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".into(),
+                    content: vec![ContentItem::OutputText {
+                        text: "response".into(),
+                    }],
+                    phase: None,
+                },
+            ],
+            tools: vec![],
+            tool_choice: "auto".into(),
+            parallel_tool_calls: true,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![],
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        };
+
+        let result = responses_request_to_chat_request(&request).unwrap();
+        assert_eq!(result.messages.len(), 1);
+        let msg = &result.messages[0];
+        assert_eq!(msg.role, ChatRole::Assistant);
+        // Only text, no ReasoningContent since it arrived before the message
+        assert_eq!(msg.content.parts().len(), 1);
+    }
+
+    /// Full round-trip test simulating a real DeepSeek turn with tool calls:
+    /// User → Assistant(text+reasoning) + FunctionCall → Tool result → next request.
+    /// The assistant message MUST have reasoning_content echoed back, and
+    /// consecutive assistant items MUST be merged into one message.
+    #[test]
+    fn test_tool_call_merges_with_reasoning_assistant() {
+        let request = ResponsesApiRequest {
+            model: "deepseek-v4-flash".into(),
+            instructions: "You are helpful.".into(),
+            input: vec![
+                // Turn 1: user asks
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".into(),
+                    content: vec![ContentItem::InputText {
+                        text: "List files".into(),
+                    }],
+                    phase: None,
+                },
+                // Turn 1: assistant responds (empty text — typical when model calls tool immediately)
+                ResponseItem::Message {
+                    id: None,
+                    role: "assistant".into(),
+                    content: vec![],
+                    phase: None,
+                },
+                // Turn 1: reasoning content (from DeepSeek thinking mode)
+                ResponseItem::Reasoning {
+                    id: "rsn_1".into(),
+                    summary: vec![],
+                    content: None,
+                    encrypted_content: Some("I should list the files to help the user.".into()),
+                },
+                // Turn 1: tool call (model decided to run ls)
+                ResponseItem::FunctionCall {
+                    id: None,
+                    name: "exec_command".into(),
+                    namespace: None,
+                    arguments: r#"{"cmd":"ls"}"#.into(),
+                    call_id: "call_1".into(),
+                },
+                // Turn 1: tool result
+                ResponseItem::FunctionCallOutput {
+                    call_id: "call_1".into(),
+                    output: codex_protocol::models::FunctionCallOutputPayload {
+                        body: FunctionCallOutputBody::Text("file1.txt\nfile2.txt".into()),
+                        success: Some(true),
+                    },
+                },
+            ],
+            tools: vec![],
+            tool_choice: "auto".into(),
+            parallel_tool_calls: true,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![],
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        };
+
+        let result = responses_request_to_chat_request(&request).unwrap();
+        // Messages: user, assistant(merged: text+reasoning+tool_call), tool
+        assert_eq!(
+            result.messages.len(),
+            3,
+            "should merge text assistant + tool call into one message"
+        );
+
+        // The assistant message (index 1) must have: text (empty), reasoning, AND tool call
+        let assistant = &result.messages[1];
+        assert_eq!(assistant.role, ChatRole::Assistant);
+        let parts = assistant.content.parts();
+        assert_eq!(parts.len(), 2, "should have reasoning + tool_call parts");
+        assert!(
+            matches!(&parts[0], ContentPart::ReasoningContent(r) if r == "I should list the files to help the user."),
+            "first part should be ReasoningContent (injected by Reasoning item)"
+        );
+        assert!(
+            matches!(&parts[1], ContentPart::ToolCall(_)),
+            "second part should be ToolCall (merged from FunctionCall item)"
+        );
+
+        // Tool message
+        let tool = &result.messages[2];
+        assert_eq!(tool.role, ChatRole::Tool);
+    }
+
+    /// If there's no preceding assistant message at all, the reasoning
+    /// is simply skipped (encrypted_content is still collected for
+    /// thought_signatures but no ReasoningContent part is emitted).
+    #[test]
+    fn test_reasoning_without_assistant_message_is_skipped() {
+        let request = ResponsesApiRequest {
+            model: "deepseek-v4-flash".into(),
+            instructions: String::new(),
+            input: vec![
+                ResponseItem::Message {
+                    id: None,
+                    role: "user".into(),
+                    content: vec![ContentItem::InputText {
+                        text: "Hello".into(),
+                    }],
+                    phase: None,
+                },
+                // Reasoning without a preceding assistant message
+                ResponseItem::Reasoning {
+                    id: "rsn_no_assistant".into(),
+                    summary: vec![],
+                    content: None,
+                    encrypted_content: Some("thinking".into()),
+                },
+            ],
+            tools: vec![],
+            tool_choice: "auto".into(),
+            parallel_tool_calls: true,
+            reasoning: None,
+            store: false,
+            stream: true,
+            include: vec![],
+            service_tier: None,
+            prompt_cache_key: None,
+            text: None,
+            client_metadata: None,
+        };
+
+        let result = responses_request_to_chat_request(&request).unwrap();
+        assert_eq!(result.messages.len(), 1);
+        let msg = &result.messages[0];
+        assert_eq!(msg.role, ChatRole::User);
     }
 }

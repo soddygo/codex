@@ -1261,7 +1261,7 @@ impl ModelClientSession {
                 &client_setup.api_provider,
                 &client_setup.api_auth,
                 options.extra_headers,
-                adapter_kind_for_provider(&client_setup.api_provider),
+                adapter_kind_for_provider(&client_setup.api_provider, &request.model),
                 client_setup.api_provider.stream_idle_timeout,
             )
             .await;
@@ -2355,42 +2355,97 @@ impl WebsocketTelemetry for ApiTelemetry {
     }
 }
 
-fn adapter_kind_for_provider(provider: &ApiProvider) -> genai::adapter::AdapterKind {
+fn adapter_kind_for_provider(provider: &ApiProvider, model: &str) -> genai::adapter::AdapterKind {
     use genai::adapter::AdapterKind;
 
     let name = provider.name.to_ascii_lowercase();
     let url = provider.base_url.to_ascii_lowercase();
+    let m = model.to_ascii_lowercase();
 
-    let kind = if name.contains("minimax") || url.contains("minimax") {
-        AdapterKind::MiniMax
-    } else if name.contains("deepseek") || url.contains("deepseek") {
+    // Priority: URL > provider name > model name > OpenAI.
+    // URL identifies the actual API endpoint — always authoritative.
+    // --provider is a user hint, may be absent or wrong.
+    // Model name is the most reliable signal when the provider is a
+    // generic third-party proxy (common in China for DeepSeek etc.).
+    // Model patterns follow genai's AdapterKind::from_model().
+    let kind = if url.contains("deepseek") {
         AdapterKind::DeepSeek
-    } else if name.contains("moonshot") || url.contains("moonshot") {
+    } else if url.contains("minimax") {
+        AdapterKind::MiniMax
+    } else if url.contains("moonshot") {
         AdapterKind::Moonshot
-    } else if name.contains("aliyun")
-        || name.contains("dashscope")
-        || url.contains("aliyuncs.com")
-        || url.contains("dashscope")
-    {
+    } else if url.contains("aliyuncs.com") || url.contains("dashscope") {
         AdapterKind::Aliyun
-    } else if name.contains("baidu")
-        || name.contains("qianfan")
-        || name.contains("ernie")
-        || url.contains("baidubce.com")
-    {
+    } else if url.contains("baidubce.com") {
         AdapterKind::Baidu
-    } else if name.contains("mimo") || url.contains("xiaomimimo") {
+    } else if url.contains("xiaomimimo") {
         AdapterKind::Mimo
     } else if url.contains("z.ai") {
         AdapterKind::Zai
     } else if url.contains("bigmodel.cn") {
         AdapterKind::BigModel
-    } else if name.contains("zai") {
+    } else if url.contains("x.ai") {
+        AdapterKind::Xai
+    } else if url.contains("fireworks.ai") {
+        AdapterKind::Fireworks
+    } else if url.contains("api.groq.com") {
+        AdapterKind::Groq
+    } else if url.contains("generativelanguage.googleapis.com") || url.contains("ai.google.dev") {
+        AdapterKind::Gemini
+    } else if url.contains("api.anthropic.com") {
+        AdapterKind::Anthropic
+    } else if url.contains("api.together.xyz") {
+        AdapterKind::Together
+    } else if url.contains("api.cohere.com") {
+        AdapterKind::Cohere
+    } else if name.contains("deepseek") {
+        AdapterKind::DeepSeek
+    } else if name.contains("minimax") {
+        AdapterKind::MiniMax
+    } else if name.contains("moonshot") {
+        AdapterKind::Moonshot
+    } else if name.contains("aliyun") || name.contains("dashscope") {
+        AdapterKind::Aliyun
+    } else if name.contains("baidu") || name.contains("qianfan") || name.contains("ernie") {
+        AdapterKind::Baidu
+    } else if name.contains("mimo") {
+        AdapterKind::Mimo
+    } else if name.contains("zai") || name.contains("zhipu") || name.contains("glm") {
         AdapterKind::Zai
     } else if name.contains("bigmodel") {
         AdapterKind::BigModel
-    } else if name.contains("zhipu") || name.contains("glm") {
-        AdapterKind::BigModel
+    } else if name.contains("xai") || name.contains("grok") {
+        AdapterKind::Xai
+    } else if name.contains("fireworks") {
+        AdapterKind::Fireworks
+    } else if name.contains("groq") {
+        AdapterKind::Groq
+    } else if name.contains("gemini") {
+        AdapterKind::Gemini
+    } else if name.contains("claude") || name.contains("anthropic") {
+        AdapterKind::Anthropic
+    } else if name.contains("together") {
+        AdapterKind::Together
+    } else if name.contains("cohere") {
+        AdapterKind::Cohere
+    } else if m.starts_with("deepseek-") {
+        AdapterKind::DeepSeek
+    } else if m.starts_with("moonshot-") {
+        AdapterKind::Moonshot
+    } else if m.starts_with("mimo-") {
+        AdapterKind::Mimo
+    } else if m.starts_with("grok") {
+        AdapterKind::Xai
+    } else if m.starts_with("glm") {
+        AdapterKind::Zai
+    } else if m.starts_with("claude") {
+        AdapterKind::Anthropic
+    } else if m.starts_with("gemini") {
+        AdapterKind::Gemini
+    } else if m.starts_with("command") || m.starts_with("embed-") {
+        AdapterKind::Cohere
+    } else if m.contains("fireworks") {
+        AdapterKind::Fireworks
     } else {
         AdapterKind::OpenAI
     };

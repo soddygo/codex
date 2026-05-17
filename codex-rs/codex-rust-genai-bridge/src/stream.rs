@@ -6,14 +6,19 @@ use codex_api::SharedAuthProvider;
 use codex_api::TransportError;
 use futures::StreamExt;
 use genai::adapter::AdapterKind;
-use genai::chat::{ChatOptions, ChatResponseFormat, JsonSpec, Verbosity};
+use genai::chat::ChatOptions;
+use genai::chat::ChatResponseFormat;
+use genai::chat::JsonSpec;
+use genai::chat::Verbosity;
 use http::HeaderMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
+use tracing;
 
 use crate::convert_request::responses_request_to_chat_request;
 use crate::convert_response::chat_event_to_response_event;
-use crate::resolver::{build_extra_headers, build_genai_client};
+use crate::resolver::build_extra_headers;
+use crate::resolver::build_genai_client;
 use crate::types::PendingAssistantMessage;
 
 const RESPONSE_STREAM_CHANNEL_CAPACITY: usize = 256;
@@ -43,10 +48,56 @@ pub async fn stream_via_genai(
 
     let genai_client = build_genai_client(api_provider, api_auth, adapter_kind);
 
+    let msg_count = chat_request.messages.len();
+    let system_present = chat_request.system.is_some();
+    tracing::info!(
+        model = %model,
+        adapter = ?adapter_kind,
+        message_count = msg_count,
+        has_system_prompt = system_present,
+        has_reasoning_effort = chat_options.reasoning_effort.is_some(),
+        "Dispatching chat stream via genai"
+    );
+
+    // Debug: log each message's role and whether it carries reasoning_content
+    for (i, msg) in chat_request.messages.iter().enumerate() {
+        let has_reasoning = msg
+            .content
+            .parts()
+            .iter()
+            .any(|p| matches!(p, genai::chat::ContentPart::ReasoningContent(_)));
+        let part_types: Vec<&str> = msg
+            .content
+            .parts()
+            .iter()
+            .map(|p| match p {
+                genai::chat::ContentPart::Text(_) => "text",
+                genai::chat::ContentPart::ReasoningContent(_) => "reasoning",
+                genai::chat::ContentPart::ToolCall(_) => "tool_call",
+                genai::chat::ContentPart::ToolResponse(_) => "tool_response",
+                genai::chat::ContentPart::ThoughtSignature(_) => "thought_sig",
+                genai::chat::ContentPart::Binary(_) => "binary",
+                genai::chat::ContentPart::Custom(_) => "custom",
+            })
+            .collect();
+        tracing::debug!(
+            msg_index = i,
+            role = ?msg.role,
+            has_reasoning_content = has_reasoning,
+            part_types = ?part_types,
+            "Chat message detail"
+        );
+    }
+
     let chat_stream_response = genai_client
         .exec_chat_stream(&model, chat_request, Some(&chat_options))
         .await
         .map_err(|e| {
+            tracing::error!(
+                model = %model,
+                error = %e,
+                "genai stream failed"
+            );
             ApiError::Transport(TransportError::Network(format!("genai stream error: {e}")))
         })?;
 
