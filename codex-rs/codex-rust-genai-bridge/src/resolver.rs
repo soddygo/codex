@@ -39,6 +39,7 @@ pub fn build_genai_client(
 
     genai::Client::builder()
         .with_adapter_kind(adapter_kind)
+        .with_default_base_url(base_url.clone())
         .with_auth_resolver_fn(move |_model_iden| {
             let token = auth_headers
                 .get(http::header::AUTHORIZATION)

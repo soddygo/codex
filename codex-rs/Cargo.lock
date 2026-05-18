@@ -6001,7 +6001,8 @@ dependencies = [
 
 [[package]]
 name = "genai"
-version = "0.6.0-beta.20-WIP"
+version = "0.6.0-beta.21-WIP"
+source = "git+https://github.com/soddygo/rust-genai.git?branch=dev#d3d2f15577ef8785b99b0bdf0c23d1b095cb5155"
 dependencies = [
  "base64 0.22.1",
  "bytes",
