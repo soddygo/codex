@@ -53,14 +53,16 @@ jobs:
           version: 0.14.0
 
       - name: Build bwrap
-        run: cargo build --target ${{ matrix.target }} --release --bin bwrap
+        run: |
+          cargo build --target ${{ matrix.target }} --release --bin bwrap
+        working-directory: codex-rs
 
       - name: Package bwrap
         id: package
         shell: bash
         run: |
           set -euo pipefail
-          bwrap_path="target/${{ matrix.target }}/release/bwrap"
+          bwrap_path="codex-rs/target/${{ matrix.target }}/release/bwrap"
           digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
           echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
 
