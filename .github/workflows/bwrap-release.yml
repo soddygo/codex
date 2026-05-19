@@ -1,0 +1,111 @@
+# Build and release bwrap for codex-* tags
+# This is a simplified workflow for soddygo/codex forks that use codex-X.Y.Z tag format
+name: bwrap-release
+
+on:
+  push:
+    tags:
+      - "codex-*.*.*"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-bwrap:
+    name: Build bwrap
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+          - target: aarch64-unknown-linux-musl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux bwrap build dependencies
+        run: |
+          sudo apt-get update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends pkg-config libcap-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Use hermetic Cargo home (musl)
+        shell: bash
+        run: |
+          cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
+          mkdir -p "${cargo_home}/bin"
+          echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "${cargo_home}/bin" >> "$GITHUB_PATH"
+          : > "${cargo_home}/config.toml"
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.14.0
+
+      - name: Build bwrap
+        run: cargo build --target ${{ matrix.target }} --release --bin bwrap
+
+      - name: Package bwrap
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          bwrap_path="target/${{ matrix.target }}/release/bwrap"
+          digest="$(sha256sum "$bwrap_path" | awk '{print $1}')"
+          echo "CODEX_BWRAP_SHA256=${digest}" >> "$GITHUB_ENV"
+
+          tmp_dir="$(mktemp -d)"
+          tar_name="bwrap-${{ matrix.target }}"
+          mkdir -p "${tmp_dir}/${tar_name}"
+          cp "${bwrap_path}" "${tmp_dir}/${tar_name}/bwrap"
+          chmod 0755 "${tmp_dir}/${tar_name}/bwrap"
+          tar -C "${tmp_dir}" -czf "bwrap-${{ matrix.target }}.tar.gz" "${tar_name}"
+          rm -rf "${tmp_dir}"
+
+          echo "bwrap_tar=bwrap-${{ matrix.target }}.tar.gz" >> "$GITHUB_OUTPUT"
+          echo "Built bwrap with sha256:${digest}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bwrap-${{ matrix.target }}
+          path: ${{ steps.package.outputs.bwrap_tar }}
+          retention-days: 1
+
+  release:
+    needs: build-bwrap
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: |
+          echo "=== Artifacts ==="
+          ls -la artifacts/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          generate_release_notes: false
+          files: |
+            artifacts/**/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
