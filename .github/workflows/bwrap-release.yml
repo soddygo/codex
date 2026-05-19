@@ -55,6 +55,11 @@ jobs:
         with:
           version: 0.14.0
 
+      - name: Install musl build tools
+        env:
+          TARGET: ${{ matrix.target }}
+        run: bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+
       - name: Build bwrap
         run: |
           cargo build --target ${{ matrix.target }} --release --bin bwrap
